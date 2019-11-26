@@ -1,6 +1,7 @@
 import numpy as np
-import scipy.linalg    # you may find scipy.linalg.block_diag useful
+import scipy.linalg  # you may find scipy.linalg.block_diag useful
 import turtlebot_model as tb
+
 
 class Ekf(object):
     """
@@ -43,7 +44,10 @@ class Ekf(object):
         # TODO: Update self.x, self.Sigma.
         self.x = g  # np.matmul(Gx,self.x) + np.matmul(Gu, u)
 
-        self.Sigma = np.matmul(Gx, np.matmul(self.Sigma, np.transpose(Gx))) + dt*np.matmul(Gu, np.matmul(self.R, np.transpose(Gu)))
+        self.Sigma = np.matmul(Gx, np.matmul(self.Sigma, np.transpose(Gx))) + dt * np.matmul(Gu, np.matmul(self.R,
+                                                                                                           np.transpose(
+                                                                                                               Gu)))
+        g
 
         ########## Code ends here ##########
 
@@ -87,7 +91,7 @@ class Ekf(object):
         S = np.matmul(H, np.matmul(self.Sigma, np.transpose(H))) + Q
         K = np.matmul(self.Sigma, np.matmul(np.transpose(H), np.linalg.inv(S)))
 
-        self.x = self.x + np.matmul(K, z).reshape(3,)
+        self.x = self.x + np.matmul(K, z).reshape(-1)
         self.Sigma = self.Sigma - np.matmul(K, np.matmul(S, np.transpose(K)))
         ########## Code ends here ##########
 
@@ -199,6 +203,7 @@ class EkfLocalization(Ekf):
             H_list: [np.array[2,3]] - list of Jacobians of the innovation
                                       vectors with respect to the belief mean self.x.
         """
+
         def angle_diff(a, b):
             a = a % (2. * np.pi)
             b = b % (2. * np.pi)
@@ -237,7 +242,7 @@ class EkfLocalization(Ekf):
 
             j_min = np.argmin(d[i, :])
 
-            if d[i, j_min] < self.g**2:
+            if d[i, j_min] < self.g ** 2:
                 v_list.append(v[:, i, j_min])
                 Q_list.append(Q_raw[i])
                 H_list.append(Hs[j_min])
@@ -263,12 +268,12 @@ class EkfLocalization(Ekf):
         for j in range(self.map_lines.shape[1]):
             ########## Code starts here ##########
             # TODO: Compute h, Hx using tb.transform_line_to_scanner_frame().
-            h, Hx = tb.transform_line_to_scanner_frame(self.map_lines[:,j], self.x, self.tf_base_to_camera)
+            h, Hx = tb.transform_line_to_scanner_frame(self.map_lines[:, j], self.x, self.tf_base_to_camera)
 
             ########## Code ends here ##########
 
             h, Hx = tb.normalize_line_parameters(h, Hx)
-            hs[:,j] = h
+            hs[:, j] = h
             Hx_list.append(Hx)
 
         return hs, Hx_list
@@ -308,7 +313,48 @@ class EkfSlam(Ekf):
         ########## Code starts here ##########
         # TODO: Compute g, Gx, Gu.
 
+        xt_1 = g[0]
+        yt_1 = g[1]
+        tht_1 = g[2]
 
+        V = u[0]
+        om = u[1]
+
+        EPSILON_OMEGA = 0.001
+
+        if np.abs(u[1]) > EPSILON_OMEGA:
+            tht = om * dt + tht_1  # theta
+            g[2] = tht
+            g[0] = xt_1 + V / om * (np.sin(tht) - np.sin(tht_1))  # x
+            g[1] = yt_1 + V / om * (np.cos(tht_1) - np.cos(tht))  # y
+
+            Gx[0, 2] = V / om * (np.cos(tht) - np.cos(tht_1))  # del_th/del_x
+            Gx[1, 2] = V / om * (np.sin(tht) - np.sin(tht_1))  # del_th/del_y
+
+            Gu[0, 0] = 1.0 / om * (np.sin(tht) - np.sin(tht_1))
+            Gu[0, 1] = V / np.power(om, 2) * (np.sin(tht_1) - np.sin(tht)) + V * dt / om * np.cos(tht)
+
+            Gu[1, 0] = 1.0 / om * (np.cos(tht_1) - np.cos(tht))
+            Gu[1, 1] = V / np.power(om, 2) * (np.cos(tht) - np.cos(tht_1)) + V * dt / om * np.sin(tht)
+
+            Gu[2, 1] = dt
+
+        else:
+            tht = om * dt + tht_1
+            g[2] = tht
+            g[0] = xt_1 + V * dt * np.cos(tht)
+            g[1] = yt_1 + V * dt * np.sin(tht)
+
+            Gx[0, 2] = -V * dt * np.sin(tht)  # del_th/del_x
+            Gx[1, 2] = V * dt * np.cos(tht)  # del_th/del_y
+
+            Gu[0, 0] = dt * np.cos(tht)  # del_x/del_V
+            Gu[0, 1] = -V * dt ** 2 * np.sin(tht)  # del_x/del_om
+
+            Gu[1, 0] = dt * np.sin(tht)  # del_y/del_V
+            Gu[1, 1] = V * dt ** 2 * np.cos(tht)  # del_y/del_om
+
+            Gu[2, 1] = dt  # del_th/del_om
         ########## Code ends here ##########
 
         return g, Gx, Gu
@@ -335,7 +381,23 @@ class EkfSlam(Ekf):
         # TODO: Compute z, Q, H.
         # Hint: Should be identical to EkfLocalization.measurement_model().
 
+        vertical = True
 
+        if v_list[0].shape != (2, 1):
+            v_list[0] = v_list[0].reshape(2, 1)
+            vertical = False
+
+        z = v_list[0]
+        H = H_list[0]
+        Q = Q_list[0]
+
+        for k in range(len(v_list)):
+            if not vertical:
+                v_list[k] = v_list[k].reshape(2, 1)
+
+            z = np.vstack((z, v_list[k]))
+            H = np.vstack((H, H_list[k]))
+            Q = scipy.linalg.block_diag(Q, Q_list[k])
         ########## Code ends here ##########
 
         return z, Q, H
@@ -344,6 +406,7 @@ class EkfSlam(Ekf):
         """
         Adapt this method from EkfLocalization.compute_innovations().
         """
+
         def angle_diff(a, b):
             a = a % (2. * np.pi)
             b = b % (2. * np.pi)
@@ -362,8 +425,30 @@ class EkfSlam(Ekf):
 
         ########## Code starts here ##########
         # TODO: Compute v_list, Q_list, H_list.
+        num_predictions = len(Hs)
+        num_measurements = len(Q_raw)
 
+        d = np.zeros((num_measurements, num_predictions))
+        v = np.zeros((2, num_measurements, num_predictions))
 
+        v_list = []
+        Q_list = []
+        H_list = []
+
+        for i in range(num_measurements):
+            for j in range(num_predictions):
+                v[:, i, j] = z_raw[:, i] - hs[:, j]
+
+                S = np.matmul(Hs[j], np.matmul(self.Sigma, np.transpose(Hs[j]))) + Q_raw[i]
+
+                d[i, j] = np.matmul(np.transpose(v[:, i, j]), np.matmul(np.linalg.inv(S), v[:, i, j]))
+
+            j_min = np.argmin(d[i, :])
+
+            if d[i, j_min] < self.g ** 2:
+                v_list.append(v[:, i, j_min])
+                Q_list.append(Q_raw[i])
+                H_list.append(Hs[j_min])
         ########## Code ends here ##########
 
         return v_list, Q_list, H_list
@@ -377,22 +462,87 @@ class EkfSlam(Ekf):
         Hx_list = []
         for j in range(J):
             idx_j = 3 + 2 * j
-            alpha, r = self.x[idx_j:idx_j+2]
+            alpha, r = self.x[idx_j:idx_j + 2]
 
-            Hx = np.zeros((2,self.x.size))
+            Hx = np.zeros((2, self.x.size))
 
             ########## Code starts here ##########
             # TODO: Compute h, Hx.
 
+            x = self.x[0:3]
+
+            rotation = np.array([
+                [np.cos(x[2]), -np.sin(x[2])],
+                [np.sin(x[2]), np.cos(x[2])]
+            ])
+
+            base_to_camera_xy = np.array([
+                [self.tf_base_to_camera[0]],
+                [self.tf_base_to_camera[1]]
+            ])
+
+            base_to_camera_xy_prime = np.matmul(rotation, base_to_camera_xy)
+
+            world_to_camera = base_to_camera_xy_prime + np.array([[x[0]], [x[1]]])
+
+            r_c = r - np.cos(alpha) * world_to_camera[0, 0] - np.sin(alpha) * world_to_camera[1, 0]
+            alpha_c = alpha - self.tf_base_to_camera[2] - x[2]
+
+            h = np.array([alpha_c, r_c])
+
+            method = 2
+            if method == 1:
+                q = (r*np.cos(alpha) - x[0])**2 + (r*np.sin(alpha) - x[1])**2
+
+                a = (x[0] - r*np.cos(alpha))/np.sqrt(q)
+                b = (x[1] - r*np.sin(alpha))/np.sqrt(q)
+                c = -b/np.sqrt(q)
+                d = a/np.sqrt(q)
+
+                Hx[0, 0] = a
+                Hx[0, 1] = b
+                Hx[1, 0] = c
+                Hx[1, 1] = d
+                Hx[1, 2] = -1
+            elif method == 2:
+                del_r_del_th = self.tf_base_to_camera[0] * np.cos(alpha) * np.sin(x[2]) + self.tf_base_to_camera[1] * \
+                    np.cos(alpha) * np.cos(x[2]) - self.tf_base_to_camera[0] * np.sin(alpha) * np.cos(x[2]) + \
+                    self.tf_base_to_camera[1] * np.sin(alpha) * np.sin(x[2])
+
+                del_r_del_alpha = np.sin(alpha) * (
+                    self.tf_base_to_camera[0] * np.cos(x[2]) - self.tf_base_to_camera[1] * np.sin(x[2]) + x[0]
+                ) - np.cos(alpha) * (
+                    self.tf_base_to_camera[0] * np.sin(x[2]) + self.tf_base_to_camera[1] * np.cos(x[2]) + x[1]
+                )
+
+                Hx[0, 2] = -1
+            # Hx[0, idx_j] = 1
+
+                Hx[1, 0] = -np.cos(alpha)
+                Hx[1, 1] = -np.sin(alpha)
+                Hx[1, 2] = del_r_del_th
+            else:
+                print("WRONG METHOD NUMBER")
+                return -1
+
+            # Hx[1, idx_j] = del_r_del_alpha
+            # Hx[1, idx_j + 1] = 1
 
             # First two map lines are assumed fixed so we don't want to propagate
             # any measurement correction to them.
             if j >= 2:
-                Hx[:,idx_j:idx_j+2] = np.eye(2)  # FIX ME!
+                if method == 1:
+                    Hx[:, idx_j:idx_j + 2] = np.array([
+                        [-a, -b],
+                        [-c, -d]
+                    ])  # FIX ME!
+                else:
+                    Hx[:, idx_j:idx_j + 2] = np.eye(2)
+                    Hx[1, idx_j] = del_r_del_alpha      # FIXED!!
             ########## Code ends here ##########
 
             h, Hx = tb.normalize_line_parameters(h, Hx)
-            hs[:,j] = h
+            hs[:, j] = h
             Hx_list.append(Hx)
 
         return hs, Hx_list
